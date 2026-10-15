@@ -25,7 +25,7 @@ COMMANDS
   python day_trading_lab.py sweep --synthetic
   python day_trading_lab.py live                                # paper day-trading bot
 """
-import os, sys, time, json, pickle, argparse, itertools, subprocess, tempfile
+import os, sys, time, json, html, pickle, argparse, itertools, subprocess, tempfile
 import urllib.request, urllib.parse
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -383,7 +383,7 @@ class SwingParams:
     max_pos_pct: float = 0.15
     stop_atr: float = 2.0          # initial stop = entry - 2 ATR
     trail_atr: float = 3.5         # chandelier trailing stop = highest close - 3.5 ATR
-    target_rr: float = 0.0         # 0 = no fixed target (let winners run on the trail)
+    target_rr: float = 3.0         # profit target = 3x the risk (0 = trail only)
     max_hold: int = 25             # time stop (trading days)
     adx_min: float = 20.0          # trend strength required
     rsi_pull: tuple = (30, 50)
@@ -793,66 +793,71 @@ def fetch_news(key, secret, symbols, limit=8):
 
 
 def swing_candidates(P, F, sp, equity, earn=None):
-    """Turn the latest daily bar into: buy candidates, 'what might go up' leaders, near-breakout watchlist."""
+    """Latest daily bar -> buy candidates, strongest trending stocks, near-breakout watchlist.
+    Every row carries entry / target / stop / shares so it is directly actionable."""
     C = P["C"]
     S = swing_signals(P, F, sp)
     earn = earn or {}
     today = datetime.now(NY).date()
     mkt_ok = (not sp.use_regime) or bool(regime_bool(P).iloc[-1])
+    rr = sp.target_rr if sp.target_rr > 0 else 3.0
     last = lambda df, s: float(df[s].iloc[-1])
+    sg = S["sig"].iloc[-1]
 
-    def row(s, state):
+    def build(s, state, setup, entry, why):
         price, a = last(C, s), last(F["atr"], s)
-        stop = price - sp.stop_atr * a
-        return dict(symbol=s, state=state, price=round(price, 2), stop=round(stop, 2),
-                    score=int(round(last(F["score"], s) * 100)) if last(F["score"], s) == last(F["score"], s) else 0,
-                    ret63=f"{last(F['ret63'], s):+.0%}", vs_SPY=f"{last(F['rs63'], s):+.0%}", adx=round(last(F["adx"], s)),
-                    rsi=round(last(F["rsi"], s)), rvol=round(last(F["rvol"], s), 1),
-                    from_52w_high=f"{price / last(F['hi52'], s) - 1:+.0%}"), price, stop
+        stop = entry - sp.stop_atr * a
+        rps = entry - stop
+        qty = int(min(equity * sp.risk_per_trade / rps, equity * sp.max_pos_pct / entry)) if rps > 0 else 0
+        sc = last(F["score"], s)
+        e = earn.get(s)
+        if state in ("BUY SIGNAL", "Near breakout"):
+            if not mkt_ok:
+                state, qty = "WAIT: market below 200-day", 0
+            elif e and sp.earnings_buffer > 0:
+                dd = (pd.Timestamp(e).date() - today).days
+                if 0 <= dd <= sp.earnings_buffer:
+                    state, qty = f"SKIP: earnings in {dd}d", 0
+        return dict(symbol=s, state=state, setup=setup, side="LONG", price=round(price, 2), entry=round(entry, 2),
+                    target=round(entry + rr * rps, 2), stop=round(stop, 2), rr=rr, qty=qty,
+                    risk_usd=round(qty * rps), reward_usd=round(qty * rr * rps),
+                    score=int(round(sc * 100)) if sc == sc else 0,
+                    ret63=f"{last(F['ret63'], s):+.0%}", vs_SPY=f"{last(F['rs63'], s):+.0%}",
+                    adx=round(last(F["adx"], s)), rsi=round(last(F["rsi"], s)), rvol=round(last(F["rvol"], s), 1),
+                    from_52w_high=f"{price / last(F['hi52'], s) - 1:+.0%}", earnings=e or "", why=why)
 
     cands = []
-    sg = S["sig"].iloc[-1]
-    for s in [x for x in sg.index[sg]]:
-        r, price, stop = row(s, "BUY SIGNAL")
+    for s in sg.index[sg]:
+        price = last(C, s)
         is_bo = bool(S["bo"][s].iloc[-1])
-        rps = price - stop
-        qty = int(min(equity * sp.risk_per_trade / rps, equity * sp.max_pos_pct / price)) if rps > 0 else 0
-        r.update(setup="Breakout" if is_bo else "Pullback", qty=qty, risk_usd=round(qty * rps),
-                 target=round(price + sp.target_rr * rps, 2) if sp.target_rr > 0 else None,
-                 buy_zone=f"{price:.2f}-{price * 1.005:.2f}",
-                 why=(f"Broke {sp.breakout_n}-day high on {r['rvol']}x volume; trending (ADX {r['adx']}); beating SPY {r['vs_SPY']}"
-                      if is_bo else f"Uptrend (above 50 & 200-day), pulled back to RSI {r['rsi']}, bounce candle today"))
-        e = earn.get(s)
-        r["earnings"] = e or ""
-        if not mkt_ok:
-            r["state"], r["qty"] = "WAIT: market below 200-day", 0
-        elif e and sp.earnings_buffer > 0:
-            dd = (pd.Timestamp(e).date() - today).days
-            if 0 <= dd <= sp.earnings_buffer:
-                r["state"], r["qty"] = f"SKIP: earnings in {dd}d", 0
-        cands.append(r)
+        rsi, adx, rvol = round(last(F["rsi"], s)), round(last(F["adx"], s)), round(last(F["rvol"], s), 1)
+        why = (f"Broke its {sp.breakout_n}-day high on {rvol}x volume, strong trend (ADX {adx}), beating the market"
+               if is_bo else f"Uptrend, dipped to RSI {rsi} and bounced today: buying the dip in a strong stock")
+        cands.append(build(s, "BUY SIGNAL", "Breakout" if is_bo else "Pullback", price, why))
     cands = pd.DataFrame(cands)
     if not cands.empty:
         cands = cands.sort_values("score", ascending=False)
 
     base_last = S["base"].iloc[-1]
-    stocks = [s for s in base_last.index[base_last] if s not in ETF_SET]
     lead = []
-    for s in stocks:
-        price = last(C, s)
-        near = price >= 0.97 * last(S["hi"], s) and price <= last(S["hi"], s) if last(S["hi"], s) == last(S["hi"], s) else False
+    for s in [x for x in base_last.index[base_last] if x not in ETF_SET]:
+        price, hi = last(C, s), last(S["hi"], s)
+        near = hi == hi and 0.97 * hi <= price <= hi
         ext = price > 1.3 * last(F["sma50"], s)
-        state = "Extended (wait for pullback)" if ext else "Near breakout" if near else "Strong trend"
         if sg.get(s, False):
-            state = "BUY SIGNAL"
-        r, _, _ = row(s, state)
-        r["earnings"] = earn.get(s, "")
-        lead.append(r)
+            continue
+        if near:
+            lead.append(build(s, "Near breakout", "Breakout", hi,
+                              f"Within 3% of its {sp.breakout_n}-day high. Buy only if it trades above {hi:.2f} on strong volume"))
+        else:
+            lead.append(build(s, "Extended (wait for pullback)" if ext else "Strong trend", "Trend", price,
+                              "Strong uptrend; too far above its 50-day average to chase" if ext else "Strong uptrend, no entry trigger yet"))
     lead = pd.DataFrame(lead)
     if not lead.empty:
         lead = lead.sort_values("score", ascending=False)
     watch = lead[lead.state == "Near breakout"].head(25) if not lead.empty else lead
-    return cands, (lead.head(40) if not lead.empty else lead), watch
+    allrows = pd.concat([cands, lead]) if not cands.empty else lead
+    return cands, (allrows.head(40) if not allrows.empty else allrows), watch
 
 
 def swing_scan(dc, tc, sp, equity, max_symbols=1000, fh=None, progress=None):
@@ -998,7 +1003,12 @@ def scan(dc, p, equity, symbols=None, avoid=None):
                    age_min=round(age, 1), signal={1: "LONG", -1: "SHORT", 0: ""}[sig])
         if sig:
             stop, target = levels(price, float(d["atr"][-1]), sig, p)
-            row.update(stop=round(stop, 2), target=round(target, 2), qty=size(equity, price, stop, p))
+            qty = size(equity, price, stop, p)
+            row.update(stop=round(stop, 2), target=round(target, 2), qty=qty, entry=round(price, 2),
+                       risk_usd=round(qty * abs(price - stop)), reward_usd=round(qty * abs(target - price)),
+                       setup="Day long" if sig == 1 else "Day short",
+                       why=(f"Above VWAP, breaking its 20-min high, volume {row['rvol']}x normal, RSI {row['rsi']}" if sig == 1
+                            else f"Below VWAP, breaking its 20-min low, volume {row['rvol']}x normal, RSI {row['rsi']}"))
         rows.append(row)
     df = pd.DataFrame(rows)
     df.attrs["mkt"] = mkt
@@ -1091,81 +1101,185 @@ def sweep(prep, base, eq0=25000.0, slip=0.0005, comm=0.0, train_frac=0.7, min_tr
 # 8. DASHBOARD  (python day_trading_lab.py dashboard)
 # =====================================================================
 GUIDE = """
-### How this works (plain English)
-**1. Market check first.** Most stocks rise and fall with the market. If SPY is below its 200-day average, the swing
-scanner pauses new buys. ADX tells you if a trend is real (above 25) or choppy (below 20).
+### How to read a pick card
+Each card gives you everything in plain numbers:
+- **BUY AT**: the entry price (a small zone above it is still fine).
+- **TAKE PROFIT**: where to sell for the gain. Default is 3x what you risk.
+- **STOP LOSS**: where the trade is wrong. If price gets there, you are out. Always use it.
+- **Shares / Risk / Goal**: how many shares, the most you lose if stopped, and the gain if the target hits.
+- The colored tag shows the **live status** (updates every second): *IN BUY ZONE* is the green light, *RAN PAST ENTRY* means don't chase.
 
-**2. Scan thousands of stocks.** It pulls every US stock, keeps the liquid ones (price, dollar volume), and downloads daily
-bars. Nothing is hand-picked, so leaders rotate in and out automatically.
+### How picks are found
+1. **Market check.** If SPY is below its 200-day average, swing buys pause. ADX says if a trend is real or choppy.
+2. **Whole-market scan.** Thousands of US stocks, liquid ones only. Nothing hand-picked, leaders rotate automatically.
+3. **Two setups, only in uptrends:** *Pullback* (dip in a strong stock that bounced) and *Breakout* (new high on heavy volume).
+4. **Ranking.** Strongest momentum and volume first. If nothing is clean, you get a *Watch* list with the exact price to wait for.
+5. **Risk first.** Shares are sized so a stop-out costs about 1% of the account. Earnings within 5 days are skipped (Finnhub key needed).
 
-**3. Two setups, both only in uptrends** (price above 50 & 200-day averages, ADX strong):
-- *Pullback*: the stock dipped (RSI 30-50) and bounced today. Buy the dip in an uptrend.
-- *Breakout*: price clears its 55-day high on heavy volume while beating SPY.
-
-**4. Rank.** Candidates are ranked by momentum (3 and 6-month strength) and volume. "What might go up" shows the strongest
-trending names, including ones *near* a breakout.
-
-**5. Risk first.** Size is set so a stop-out loses ~1% of the account. Initial stop = 2 ATR below entry (ATR = typical daily
-range). The stop then trails up (3.5 ATR under the highest close) so winners can run. Time stop: 25 days.
-
-**6. Earnings.** Add a free Finnhub key to see earnings dates; stocks reporting within 5 days are skipped (earnings gaps can blow
-through any stop).
-
-**7. Prove it.** Backtest tab: costs included, compared to just holding SPY, Monte Carlo (luck range) and a slippage stress test.
-Optimizer tab: walk-forward = tune on the past, grade on unseen future. Believe that number, not the in-sample one.
+### How "live" works
+Prices and status refresh every second during market hours (IEX feed). New day-trade signals are recomputed every minute because
+the data comes in 1-minute bars. Swing signals are daily, so scan once, then watch the prices.
 
 ### Honest limits
-- No rule set works in every market. The tool shows you when it doesn't.
-- Backtest universe is today's survivors (flattering). Real results are usually worse.
-- Day trading on 1-minute bars has the highest cost drag; swing mode has the better odds of surviving costs.
+- No strategy wins every time. Use **Test It** to see if this one has held up on unseen data before trusting it.
+- Backtests use today's surviving stocks, which flatters results.
 - Paper trade for weeks first. This is not financial advice.
 """
+
+CSS = """<style>
+.block-container{padding-top:1rem;padding-bottom:4rem}
+.stButton>button{width:100%;border-radius:12px;font-weight:700;padding:.55rem 1rem}
+.tl-title{font-size:1.7rem;font-weight:800;margin:0 0 .2rem 0}
+.tl-title span{font-size:.8rem;font-weight:600;opacity:.6;margin-left:8px}
+.tl-bar{margin:6px 0 10px 0}
+.tl-bar .tl-chip{margin:0 6px 6px 0}
+.tl-chip{display:inline-block;font-size:.76rem;font-weight:700;padding:3px 10px;border-radius:999px;color:#fff;white-space:nowrap}
+.c-green{background:#16a34a}.c-amber{background:#d97706}.c-red{background:#dc2626}.c-gray{background:#6b7280}.c-blue{background:#2563eb}
+.tl-card{border:1px solid rgba(128,128,128,.35);border-radius:18px;padding:14px 16px;margin:12px 0 6px 0;background:rgba(128,128,128,.07)}
+.tl-top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}
+.tl-sym{font-size:1.7rem;font-weight:800;letter-spacing:.5px;margin-right:6px}
+.tl-rank{font-size:.8rem;font-weight:700;opacity:.7}
+.tl-live{margin:6px 0 2px 0;font-size:1.05rem;font-weight:700}
+.tl-live small{font-weight:500;opacity:.7}
+.tl-grid{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:8px 0;margin:10px -8px;width:calc(100% + 16px)}
+.tl-grid td{padding:0;border:0}
+.tl-box{border-radius:14px;padding:9px 4px;text-align:center}
+.tl-box small{display:block;font-size:.62rem;font-weight:800;letter-spacing:.07em;opacity:.85}
+.tl-box b{font-size:1.3rem}
+.b-entry{background:rgba(37,99,235,.16);border:1px solid rgba(37,99,235,.55)}
+.b-target{background:rgba(22,163,74,.16);border:1px solid rgba(22,163,74,.55)}
+.b-stop{background:rgba(220,38,38,.16);border:1px solid rgba(220,38,38,.55)}
+.tl-meta{font-size:.84rem;opacity:.9}
+.tl-meta span{display:inline-block;margin:2px 14px 2px 0}
+.tl-why{font-size:.8rem;opacity:.7;margin-top:6px}
+.tl-banner{border-radius:14px;padding:10px 14px;font-weight:700;margin:6px 0 10px 0}
+.k-green{background:rgba(22,163,74,.16);border:1px solid rgba(22,163,74,.55)}
+.k-amber{background:rgba(217,119,6,.16);border:1px solid rgba(217,119,6,.55)}
+.k-red{background:rgba(220,38,38,.16);border:1px solid rgba(220,38,38,.55)}
+</style>"""
+
+PRESETS = {
+    "Careful": dict(note="Smaller bets, wider stops, fewer positions. Slower and safer.", risk=0.5, stop=2.5, trail=4.0,
+                    rr=3.0, maxpos=5, adx=25, d_risk=0.5, d_rr=2.0, d_open=2, d_loss=2.0),
+    "Balanced": dict(note="The default. About 1% risked per trade.", risk=1.0, stop=2.0, trail=3.5,
+                     rr=3.0, maxpos=8, adx=20, d_risk=1.0, d_rr=2.0, d_open=3, d_loss=3.0),
+    "Aggressive": dict(note="Bigger bets, tighter stops, more trades. Bigger swings in your account.", risk=1.5, stop=1.5,
+                       trail=3.0, rr=2.5, maxpos=10, adx=18, d_risk=1.5, d_rr=2.0, d_open=4, d_loss=4.0),
+}
+
+
+def fmt(x):
+    return f"${x:,.2f}"
+
+
+def latest_prices(dc, symbols):
+    """One cheap API call for the live price of every pick (IEX real-time feed)."""
+    if not symbols:
+        return {}
+    try:
+        from alpaca.data.requests import StockLatestTradeRequest
+        from alpaca.data.enums import DataFeed
+        r = dc.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=list(symbols), feed=DataFeed.IEX))
+        return {s: float(t.price) for s, t in r.items()}
+    except Exception:
+        return {}
+
+
+def pick_status(pk, live):
+    """Plain-English live status for a pick."""
+    if not live:
+        return "waiting for price", "gray"
+    d = 1 if pk["side"] == "LONG" else -1
+    e, t, s = pk["entry"], pk["target"], pk["stop"]
+    if d * (live - s) <= 0:
+        return "STOP LEVEL HIT - skip", "red"
+    if d * (live - t) >= 0:
+        return "TARGET REACHED - too late", "amber"
+    off = d * (live - e) / e
+    if pk["kind"] == "watch":
+        if off < -0.005:
+            return f"WAIT: needs to break {fmt(e)}", "gray"
+        return ("BREAKING OUT NOW", "green") if off < 0.01 else ("ALREADY BROKE OUT - don't chase", "amber")
+    if off > 0.005:
+        return "RAN PAST ENTRY - don't chase", "amber"
+    if off < -0.01:
+        return "BELOW ENTRY - wait for strength", "gray"
+    return "IN BUY ZONE - good entry", "green"
+
+
+def card_html(pk, live):
+    status, color = pick_status(pk, live)
+    long_ = pk["side"] == "LONG"
+    risk_ps = abs(pk["entry"] - pk["stop"])
+    rr = abs(pk["target"] - pk["entry"]) / risk_ps if risk_ps else 0
+    lbl = {"swing": "SWING BUY", "watch": "WATCH", "day": "DAY LONG" if long_ else "DAY SHORT"}[pk["kind"]]
+    lcol = {"swing": "c-blue", "watch": "c-gray", "day": "c-green" if long_ else "c-red"}[pk["kind"]]
+    l1, l2 = (("BUY IF ABOVE" if pk["kind"] == "watch" else "BUY AT"), "TAKE PROFIT") if long_ else ("SHORT AT", "COVER (PROFIT)")
+    vs = f" <small>({(live / pk['entry'] - 1) * 100:+.1f}% vs entry)</small>" if live else ""
+    live_txt = f"{fmt(live)}{vs}" if live else "<small>no live price yet</small>"
+    earn = f"<span class='tl-chip c-amber'>earnings {html.escape(str(pk['earnings']))}</span>" if pk.get("earnings") else ""
+    return "".join([
+        "<div class='tl-card'>",
+        f"<div class='tl-top'><div><span class='tl-sym'>{html.escape(pk['symbol'])}</span>",
+        f"<span class='tl-chip {lcol}'>{lbl}</span> {earn}</div><div class='tl-rank'>{html.escape(str(pk.get('rank_txt', '')))}</div></div>",
+        f"<div class='tl-live'>Now {live_txt} <span class='tl-chip c-{color}'>{status}</span></div>",
+        "<table class='tl-grid'><tr>",
+        f"<td><div class='tl-box b-entry'><small>{l1}</small><b>{fmt(pk['entry'])}</b></div></td>",
+        f"<td><div class='tl-box b-target'><small>{l2}</small><b>{fmt(pk['target'])}</b></div></td>",
+        f"<td><div class='tl-box b-stop'><small>STOP LOSS</small><b>{fmt(pk['stop'])}</b></div></td></tr></table>",
+        f"<div class='tl-meta'><span>Reward : risk <b>{rr:.1f} : 1</b></span><span><b>{int(pk['qty'])}</b> shares</span>",
+        f"<span>Risk <b>{fmt(pk['risk_usd'])}</b></span><span>Goal <b>+{fmt(pk['reward_usd'])}</b></span></div>",
+        f"<div class='tl-why'>{html.escape(str(pk.get('why', '')))}</div></div>"])
+
+
+def build_swing_picks(sc, n):
+    c = sc["cands"]
+    ok = c[c.state == "BUY SIGNAL"] if not c.empty else c
+    if not ok.empty:
+        return [dict(r, kind="swing", rank_txt=f"Strength score {r['score']}") for r in ok.head(n).to_dict("records")], \
+            "✅ Clearest setups right now"
+    w = sc["watch"]
+    if not w.empty:
+        return [dict(r, kind="watch", rank_txt=f"Strength score {r['score']}") for r in w.head(n).to_dict("records")], \
+            "👀 No clean buys today. Closest to triggering (wait for the price shown)"
+    return [], "No setups found"
+
+
+def build_day_picks(df, n):
+    if df is None or df.empty or "signal" not in df:
+        return []
+    d = df[df.signal != ""].sort_values("rvol", ascending=False).head(n)
+    return [dict(r, kind="day", side="LONG" if r["signal"] == "LONG" else "SHORT", earnings="",
+                 rank_txt=f"Volume {r['rvol']}x normal") for r in d.to_dict("records")]
+
+
+def _fragment(st, run_every):
+    f = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+    if f is None:
+        return lambda fn: fn
+    try:
+        return f(run_every=run_every)
+    except TypeError:
+        return f
 
 
 def dashboard():
     import streamlit as st
-    st.set_page_config(page_title="Trading Lab", page_icon="📈", layout="wide")
-    st.title("📈 Trading Lab")
-    st.caption("Paper trading only. Educational tool, not financial advice. Most traders lose money.")
-    sb = st.sidebar
-    sb.header("Keys")
-    key = sb.text_input("Alpaca paper key", os.environ.get("ALPACA_KEY", ""), type="password")
-    secret = sb.text_input("Alpaca paper secret", os.environ.get("ALPACA_SECRET", ""), type="password")
-    fh = sb.text_input("Finnhub key (optional: earnings)", os.environ.get("FINNHUB_KEY", ""), type="password")
-    with sb.expander("Swing settings", expanded=False):
-        sp = SwingParams(
-            setup=st.selectbox("Setups", ["both", "pullback", "breakout"]),
-            risk_per_trade=st.slider("Risk per trade (%)", 0.25, 2.0, 1.0, 0.25, key="sr") / 100,
-            max_positions=st.slider("Max positions", 1, 20, 8),
-            stop_atr=st.slider("Initial stop (x ATR)", 1.0, 4.0, 2.0, 0.5),
-            trail_atr=st.slider("Trailing stop (x ATR)", 2.0, 6.0, 3.5, 0.5),
-            target_rr=st.slider("Fixed target (R, 0 = none)", 0.0, 6.0, 0.0, 0.5),
-            max_hold=st.slider("Max hold (days)", 5, 60, 25),
-            adx_min=st.slider("Min trend strength (ADX)", 10, 35, 20),
-            min_price=st.slider("Min price ($)", 1.0, 50.0, 5.0, 1.0),
-            min_dollar_vol=st.slider("Min avg $ volume (millions)", 1, 100, 10) * 1e6,
-            use_regime=st.checkbox("Only buy when SPY > 200-day average", True),
-            earnings_buffer=st.slider("Skip if earnings within (days)", 0, 14, 5))
-    with sb.expander("Day-trade settings", expanded=False):
-        syms = [s.strip().upper() for s in st.text_area("Base watchlist", ", ".join(DEFAULT_WATCHLIST)).split(",") if s.strip()]
-        side = st.radio("Direction", ["long", "short", "both"], horizontal=True)
-        p = Params(watchlist=syms,
-                   risk_per_trade=st.slider("Risk per trade (%)", 0.1, 3.0, 1.0, 0.1, key="dr") / 100,
-                   rr=st.slider("Reward : risk", 1.0, 4.0, 2.0, 0.5),
-                   atr_mult=st.slider("Stop (x ATR)", 0.5, 3.0, 1.5, 0.1),
-                   min_rvol=st.slider("Min relative volume", 1.0, 5.0, 1.5, 0.1),
-                   daily_loss_limit=st.slider("Daily loss limit (%)", 1.0, 10.0, 3.0, 0.5) / 100,
-                   max_open=st.slider("Max open trades", 1, 10, 3),
-                   market_filter=st.checkbox("Market gate (SPY vs VWAP)", True),
-                   allow_long=side in ("long", "both"), allow_short=side in ("short", "both"))
-    with sb.expander("Backtest costs", expanded=False):
-        eq0 = st.number_input("Start equity ($)", 1000.0, 10_000_000.0, 25000.0)
-        slip = st.slider("Slippage per side (bps)", 0, 30, 5) / 10000
-        comm = st.number_input("Commission ($/share/side)", 0.0, 0.1, 0.0, 0.001, format="%.3f")
+    st.set_page_config(page_title="Trading Lab", page_icon="📈", layout="centered")
+    st.markdown(CSS, unsafe_allow_html=True)
+    ss = st.session_state
+    for k, env in (("k_key", "ALPACA_KEY"), ("k_sec", "ALPACA_SECRET"), ("k_fh", "FINNHUB_KEY")):
+        ss.setdefault(k, os.environ.get(env, ""))
+    st.markdown("<div class='tl-title'>📈 Trading Lab <span>paper trading only</span></div>", unsafe_allow_html=True)
+    with st.expander("🔑 Connect your Alpaca paper account", expanded=not (ss["k_key"] and ss["k_sec"])):
+        st.text_input("API key", type="password", key="k_key")
+        st.text_input("API secret", type="password", key="k_sec")
+        st.text_input("Finnhub key (optional, shows earnings dates)", type="password", key="k_fh")
+        st.caption("Paper keys only. Type them each visit; nothing is saved.")
+    key, secret, fh = ss["k_key"], ss["k_sec"], ss["k_fh"]
 
     def clients():
         if not (key and secret):
-            st.info("Enter your Alpaca PAPER keys in the sidebar (top-left arrow).")
             return None
         try:
             return live_clients(key, secret, paper=True)
@@ -1173,24 +1287,186 @@ def dashboard():
             st.error(f"Alpaca error: {e}")
             return None
 
-    def banner(ov):
-        getattr(st, ov["level"])(ov["text"])
+    cl = clients()
+    dc, tc = (cl if cl else (None, None))
+    T = st.tabs(["🏆 Top Picks", "🌎 Market", "🧪 Test It", "⚙️ Settings", "📘 Guide"])
 
-    T = st.tabs(["🌎 Market", "🔎 Swing", "⚡ Day", "🧪 Backtest", "🎛 Optimizer", "📘 Guide"])
+    # ---------------- Settings (built first so every tab can use it) ----------------
+    with T[3]:
+        style = st.radio("Trading style", list(PRESETS), index=1, horizontal=True, key="style")
+        ps = PRESETS[style]
+        st.caption(ps["note"])
+        n_picks = st.slider("How many picks to show", 3, 10, 5)
+        with st.expander("Fine-tune swing rules"):
+            sp = SwingParams(
+                setup=st.selectbox("Setups", ["both", "pullback", "breakout"], key="s_setup"),
+                risk_per_trade=st.slider("Risk per trade (%)", 0.25, 2.0, float(ps["risk"]), 0.25, key=f"s_risk_{style}") / 100,
+                max_positions=st.slider("Max positions", 1, 20, int(ps["maxpos"]), key=f"s_mp_{style}"),
+                stop_atr=st.slider("Stop distance (x ATR)", 1.0, 4.0, float(ps["stop"]), 0.5, key=f"s_stop_{style}"),
+                trail_atr=st.slider("Trailing stop (x ATR)", 2.0, 6.0, float(ps["trail"]), 0.5, key=f"s_trail_{style}"),
+                target_rr=st.slider("Profit target (x risk)", 1.0, 6.0, float(ps["rr"]), 0.5, key=f"s_rr_{style}"),
+                max_hold=st.slider("Max hold (days)", 5, 60, 25, key="s_hold"),
+                adx_min=st.slider("Min trend strength (ADX)", 10, 35, int(ps["adx"]), key=f"s_adx_{style}"),
+                min_price=st.slider("Min price ($)", 1.0, 50.0, 5.0, 1.0, key="s_minp"),
+                min_dollar_vol=st.slider("Min avg $ volume (millions)", 1, 100, 10, key="s_dv") * 1e6,
+                use_regime=st.checkbox("Only buy when SPY > 200-day average", True, key="s_reg"),
+                earnings_buffer=st.slider("Skip if earnings within (days)", 0, 14, 5, key="s_earn"))
+        with st.expander("Fine-tune day-trade rules"):
+            syms = [x.strip().upper() for x in st.text_area("Base watchlist", ", ".join(DEFAULT_WATCHLIST), key="d_wl").split(",") if x.strip()]
+            side = st.radio("Direction", ["long", "short", "both"], horizontal=True, key="d_side")
+            p = Params(watchlist=syms,
+                       risk_per_trade=st.slider("Risk per trade (%)", 0.1, 3.0, float(ps["d_risk"]), 0.1, key=f"d_risk_{style}") / 100,
+                       rr=st.slider("Reward : risk", 1.0, 4.0, float(ps["d_rr"]), 0.5, key=f"d_rr_{style}"),
+                       atr_mult=st.slider("Stop (x ATR)", 0.5, 3.0, 1.5, 0.1, key="d_atr"),
+                       min_rvol=st.slider("Min relative volume", 1.0, 5.0, 1.5, 0.1, key="d_rvol"),
+                       daily_loss_limit=st.slider("Daily loss limit (%)", 1.0, 10.0, float(ps["d_loss"]), 0.5, key=f"d_loss_{style}") / 100,
+                       max_open=st.slider("Max open trades", 1, 10, int(ps["d_open"]), key=f"d_open_{style}"),
+                       market_filter=st.checkbox("Market gate (SPY vs VWAP)", True, key="d_gate"),
+                       allow_long=side in ("long", "both"), allow_short=side in ("short", "both"))
+        with st.expander("Test costs"):
+            eq0 = st.number_input("Start equity for tests ($)", 1000.0, 10_000_000.0, 25000.0, key="c_eq")
+            slip = st.slider("Slippage per side (bps)", 0, 30, 5, key="c_slip") / 10000
+            comm = st.number_input("Commission ($/share/side)", 0.0, 0.1, 0.0, 0.001, format="%.3f", key="c_comm")
+
+    # ---------------- Top Picks ----------------
+    with T[0]:
+        if cl is None:
+            st.info("👆 Open **Connect** at the top and paste your paper keys to begin.")
+        mode = st.radio("What kind of trade?", ["Swing (hold days to weeks)", "Day trade (in and out today)"],
+                        horizontal=True, key="mode")
+        swing = mode.startswith("Swing")
+        mode_key = "swing" if swing else "day"
+        live = st.toggle("Live updates every second", True, key="live")
+        now0 = datetime.now(NY)
+        mkt_open = now0.weekday() < 5 and (9, 30) <= (now0.hour, now0.minute) < (16, 0)
+        run_every = 1 if (live and mkt_open and cl) else None
+
+        def run_day_scan():
+            try:
+                eq = float(tc.get_account().equity)
+                lst, note = dynamic_watchlist(key, secret, p.watchlist)
+                avoid = set()
+                if fh:
+                    e = earnings_calendar(fh, 2)
+                    avoid = set(e.symbol) if not e.empty else set()
+                df = scan(dc, p, eq, lst, avoid)
+                ss["dscan"], ss["day_mkt"], ss["t_scan"] = df, df.attrs.get("mkt", 0), time.time()
+                ss["picks"], ss["picks_mode"] = build_day_picks(df, n_picks), "day"
+                ss["picks_title"] = "⚡ Live day-trade signals"
+                ss["scan_note"] = note
+            except Exception as e:
+                st.error(f"Scan failed: {e}")
+
+        if swing:
+            if st.button("🔍 Find the best stocks", type="primary", key="go_swing") and cl:
+                bar = st.progress(0.0, text="Scanning the market...")
+                try:
+                    eq = float(tc.get_account().equity)
+                    sc = swing_scan(dc, tc, sp, eq, 1000, fh or None,
+                                    lambda f: bar.progress(min(float(f), 1.0), text="Downloading market data..."))
+                    ss["sscan"] = sc
+                    ss["picks"], ss["picks_title"] = build_swing_picks(sc, n_picks)
+                    ss["picks_mode"] = "swing"
+                except Exception as e:
+                    st.error(f"Scan failed: {e}")
+                bar.empty()
+            sc = ss.get("sscan")
+            if sc:
+                lv = sc["ov"]["level"]
+                st.markdown(f"<div class='tl-banner k-{ {'success': 'green', 'warning': 'amber', 'error': 'red'}[lv] }'>{html.escape(sc['ov']['text'])}</div>",
+                            unsafe_allow_html=True)
+                st.caption(f"Scanned {sc['n']} liquid stocks from {sc['n_uni']} US listings | data as of {sc['asof']} close | {sc['feed']}")
+            else:
+                st.caption("Tap the button. The first scan takes a few minutes; after that it's quick.")
+        else:
+            if st.button("⚡ Scan now", type="primary", key="go_day") and cl:
+                run_day_scan()
+            if not mkt_open:
+                st.caption("Market is closed. Day-trade signals appear 9:45am to 3:50pm New York time.")
+            if ss.get("day_mkt") is not None and ss.get("picks_mode") == "day":
+                m = ss["day_mkt"]
+                txt, kc = {1: ("Market is leaning UP (SPY above VWAP). Longs allowed.", "green"),
+                           -1: ("Market is leaning DOWN (SPY below VWAP). Shorts only.", "red"),
+                           0: ("Market direction unclear.", "amber")}[m]
+                st.markdown(f"<div class='tl-banner k-{kc}'>{txt}</div>", unsafe_allow_html=True)
+                st.caption(ss.get("scan_note", ""))
+
+        @_fragment(st, run_every)
+        def board():
+            now = datetime.now(NY)
+            if not swing and live and mkt_open and cl and time.time() - ss.get("t_scan", 0) > 60:
+                run_day_scan()
+            on = run_every is not None
+            st.markdown("<div class='tl-bar'>" + "".join([
+                f"<span class='tl-chip c-gray'>🕒 {now:%H:%M:%S} New York</span>",
+                f"<span class='tl-chip c-{'green' if on else 'gray'}'>{'● LIVE: updating every second' if on else '○ paused'}</span>",
+                f"<span class='tl-chip c-{'green' if mkt_open else 'gray'}'>Market {'OPEN' if mkt_open else 'CLOSED'}</span>"]) + "</div>",
+                unsafe_allow_html=True)
+            if ss.get("msg"):
+                st.success(ss.pop("msg"))
+            picks = ss.get("picks") or [] if ss.get("picks_mode") == mode_key else []
+            if not picks:
+                st.write("No picks yet. Tap the button above." if not ss.get("picks_mode") == mode_key else
+                         "No clear setups right now. Waiting is a position.")
+                return
+            st.subheader(ss.get("picks_title", "Top picks"))
+            prices = latest_prices(dc, [pk["symbol"] for pk in picks]) if dc else {}
+            ss.setdefault("last_px", {}).update(prices)
+            for i, pk in enumerate(picks):
+                lp = ss["last_px"].get(pk["symbol"])
+                st.markdown(card_html(pk, lp), unsafe_allow_html=True)
+                if pk["kind"] == "watch":
+                    continue
+                stat, _ = pick_status(pk, lp)
+                verb = "BUY" if pk["side"] == "LONG" else "SELL SHORT"
+                if st.button(f"Paper {verb} {int(pk['qty'])} {pk['symbol']}", key=f"ord_{mode_key}_{pk['symbol']}_{i}",
+                             disabled=(int(pk["qty"]) < 1 or stat.startswith("STOP"))):
+                    try:
+                        if pk["kind"] == "swing":
+                            place_swing_order(tc, pk["symbol"], pk["qty"], pk["stop"], pk["target"])
+                        else:
+                            place_order(tc, pk["symbol"], pk["side"], pk["qty"], pk["stop"], pk["target"])
+                        ss["msg"] = f"Paper order sent: {verb} {int(pk['qty'])} {pk['symbol']} with stop {fmt(pk['stop'])} and target {fmt(pk['target'])}."
+                    except Exception as e:
+                        st.error(f"Order failed: {e}")
+
+        board()
+        st.caption("Live prices come from the IEX feed (a slice of total market volume), so thinly traded stocks can look stale. "
+                   "Day signals refresh each minute; swing signals are daily.")
+        with st.expander("📂 My open paper positions"):
+            if st.button("Load positions", key="load_pos") and cl:
+                try:
+                    ss["pos"] = swing_positions(tc, dc, sp)
+                except Exception as e:
+                    st.error(f"Could not load: {e}")
+            pos = ss.get("pos")
+            if pos is not None:
+                st.dataframe(pos, hide_index=True) if not pos.empty else st.write("No open positions.")
+        with st.expander("📊 Full scan details"):
+            sc = ss.get("sscan")
+            if swing and sc:
+                st.write("**Strongest trending stocks (what might go up)**")
+                st.dataframe(sc["leaders"], hide_index=True)
+                if not sc["earn"].empty:
+                    st.write("**Earnings coming up**")
+                    st.dataframe(sc["earn"], hide_index=True)
+            elif not swing and ss.get("dscan") is not None:
+                st.dataframe(ss["dscan"], hide_index=True)
+            else:
+                st.write("Run a scan first.")
 
     # ---------------- Market ----------------
-    with T[0]:
-        if st.button("Refresh market view"):
-            cl = clients()
-            if cl:
-                with st.spinner("Loading indexes and sectors..."):
-                    try:
-                        st.session_state["ov"] = market_light(cl[0])
-                    except Exception as e:
-                        st.error(f"Could not load: {e}")
-        ov = st.session_state.get("ov") or (st.session_state.get("sscan") or {}).get("ov")
+    with T[1]:
+        if st.button("Refresh market view", key="ref_mkt") and cl:
+            with st.spinner("Loading..."):
+                try:
+                    ss["ov"] = market_light(dc)
+                except Exception as e:
+                    st.error(f"Could not load: {e}")
+        ov = ss.get("ov") or (ss.get("sscan") or {}).get("ov")
         if ov:
-            banner(ov)
+            kc = {"success": "green", "warning": "amber", "error": "red"}[ov["level"]]
+            st.markdown(f"<div class='tl-banner k-{kc}'>{html.escape(ov['text'])}</div>", unsafe_allow_html=True)
             st.caption(f"As of {ov['asof']} close")
             st.dataframe(ov["indices"], hide_index=True)
             st.subheader("Sector leaders (vs SPY, 3 months)")
@@ -1201,243 +1477,102 @@ def dashboard():
                 c[0].metric("Above 50-day", f"{b['above_50d']:.0%}")
                 c[1].metric("Above 200-day", f"{b['above_200d']:.0%}")
                 c[2].metric("Near 52-wk high", f"{b['near_high']:.0%}")
-                st.caption(f"Breadth across {b['n']} liquid stocks. Above 60% above the 50-day = healthy market.")
+                st.caption(f"Across {b['n']} liquid stocks. Over 60% above their 50-day average = healthy market.")
         else:
-            st.write("Tap **Refresh market view**, or run the Swing scan (it includes this).")
-        sc = st.session_state.get("sscan")
-        if sc is not None and not sc["earn"].empty:
-            st.subheader("Earnings this week or next")
-            st.dataframe(sc["earn"], hide_index=True)
+            st.write("Tap **Refresh market view** (or run the swing scan, it includes this).")
 
-    # ---------------- Swing ----------------
-    with T[1]:
-        maxsym = st.slider("How many stocks to scan (most liquid first)", 200, 3000, 1000, 100)
-        st.caption("First scan downloads thousands of symbols and can take a few minutes. Later scans reuse cached data.")
-        if st.button("Scan the whole market"):
-            cl = clients()
-            if cl:
-                bar = st.progress(0.0, text="Starting...")
-                try:
-                    eq = float(cl[1].get_account().equity)
-                    st.session_state["sscan"] = swing_scan(cl[0], cl[1], sp, eq, maxsym, fh or None,
-                                                           lambda f: bar.progress(min(float(f), 1.0), text="Downloading market data..."))
-                    bar.empty()
-                except Exception as e:
-                    bar.empty()
-                    st.error(f"Scan failed: {e}")
-        sc = st.session_state.get("sscan")
-        if sc:
-            banner(sc["ov"])
-            st.caption(f"As of {sc['asof']} close | {sc['n']} stocks scanned from {sc['n_uni']} US listings | data: {sc['feed']}")
-            a, b, c, d = st.tabs(["Buy candidates", "What might go up", "Near breakout", "My positions"])
-            with a:
-                cands = sc["cands"]
-                if cands.empty:
-                    st.write("No buy signals today. That is normal. Waiting is a position.")
-                else:
-                    st.dataframe(cands, hide_index=True)
-                    cl = clients()
-                    ok = cands[cands.state == "BUY SIGNAL"]
-                    for _, r in ok.head(10).iterrows():
-                        if cl and st.button(f"Paper BUY {int(r.qty)} {r.symbol} (stop {r.stop})", key=f"sb_{r.symbol}"):
-                            try:
-                                place_swing_order(cl[1], r.symbol, r.qty, r.stop, r.get("target"))
-                                st.success(f"Paper order sent for {r.symbol} (GTC, stop attached).")
-                            except Exception as e:
-                                st.error(f"Order failed: {e}")
-                    pick = st.selectbox("Headlines for", [""] + list(cands.symbol))
-                    if pick and key and secret:
-                        for ts, h, src in fetch_news(key, secret, [pick]):
-                            st.write(f"- {h} _({src})_")
-            with b:
-                st.caption("Strongest trending stocks right now, ranked by momentum + relative strength. Not a prediction, a ranking.")
-                st.dataframe(sc["leaders"], hide_index=True)
-            with c:
-                st.caption("Trending stocks within 3% of a breakout. Set an alert and wait for the volume.")
-                st.dataframe(sc["watch"], hide_index=True)
-            with d:
-                if st.button("Load my paper positions"):
-                    cl = clients()
-                    if cl:
-                        try:
-                            st.session_state["pos"] = swing_positions(cl[1], cl[0], sp)
-                        except Exception as e:
-                            st.error(f"Could not load positions: {e}")
-                pos = st.session_state.get("pos")
-                if pos is not None:
-                    st.dataframe(pos, hide_index=True) if not pos.empty else st.write("No open positions.")
-
-    # ---------------- Day ----------------
+    # ---------------- Test It ----------------
     with T[2]:
-        now = datetime.now(NY)
-        flat = now.replace(hour=p.flatten_at[0], minute=p.flatten_at[1], second=0, microsecond=0)
-        in_window = now.weekday() < 5 and p.start_after <= (now.hour, now.minute) < p.flatten_at
-        c1, c2, c3 = st.columns(3)
-        c1.metric("New York time", now.strftime("%H:%M:%S"))
-        c2.metric("Minutes until flatten", f"{max((flat - now).total_seconds() / 60, 0):.0f}")
-        c3.metric("Trading window", "OPEN" if in_window else "CLOSED")
-        dyn = st.checkbox("Scan beyond my list: most-active + biggest movers", True)
-        auto = st.checkbox("Auto-refresh every 60s", False)
-        cl = clients()
-        if cl:
-            try:
-                eq = float(cl[1].get_account().equity)
-                st.write(f"Paper equity: **${eq:,.2f}**")
-                if st.button("Scan now") or auto:
-                    lst, note = dynamic_watchlist(key, secret, p.watchlist) if dyn else (p.watchlist, "")
-                    avoid = set()
-                    if fh:
-                        e = earnings_calendar(fh, 2)
-                        avoid = set(e.symbol) if not e.empty else set()
-                    st.session_state["scan"] = scan(cl[0], p, eq, lst, avoid)
-                    st.session_state["scan_note"] = note + (f" | skipping {len(avoid)} earnings names" if avoid else "")
-                sc = st.session_state.get("scan")
-                if sc is not None:
-                    m = sc.attrs.get("mkt", 0)
-                    st.info({1: "Market gate: SPY above VWAP (longs allowed)", -1: "Market gate: SPY below VWAP (shorts only)",
-                             0: "Market gate: neutral/unknown"}[m])
-                    st.caption(st.session_state.get("scan_note", ""))
-                    if sc.empty:
-                        st.write("No data (market closed or no bars yet).")
-                    else:
-                        st.dataframe(sc, hide_index=True)
-                        for _, r in sc[sc.signal != ""].iterrows():
-                            if st.button(f"Paper {r.signal} {int(r.qty)} {r.symbol} (stop {r.stop}, target {r.target})", key=f"o_{r.symbol}"):
-                                place_order(cl[1], r.symbol, r.signal, r.qty, r.stop, r.target)
-                                st.success(f"Paper bracket order sent for {r.symbol}")
-                if auto:
-                    time.sleep(60)
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Alpaca error: {e}")
-
-    # ---------------- Backtest ----------------
-    with T[3]:
-        eng = st.radio("Engine", ["Swing (daily bars)", "Day trading (1-minute)"], horizontal=True)
-        src = st.radio("Data", ["Synthetic (code test only)", "Alpaca history"] + (["Upload CSV"] if eng.startswith("Day") else []), horizontal=True)
-        c1, c2, c3 = st.columns(3)
-        years = 3 if eng.startswith("Swing") else 1
-        start = c1.date_input("Start", datetime.now().date() - timedelta(days=365 * years if eng.startswith("Swing") else 60))
-        end = c2.date_input("End", datetime.now().date())
-        nsym = c3.slider("Stocks (swing)", 100, 1500, 300, 50) if eng.startswith("Swing") else 0
-        up = st.file_uploader("CSV (timestamp,symbol,open,high,low,close,volume)", type="csv") if src == "Upload CSV" else None
-        if st.button("Load data"):
-            try:
-                bar = st.progress(0.0, text="Loading...")
-                if eng.startswith("Swing"):
-                    P, F, note = load_swing_data("synthetic" if src.startswith("Synthetic") else "alpaca", start, end, nsym, key or None,
-                                                 secret or None, lambda f: bar.progress(min(float(f), 1.0), text="Downloading..."))
-                    st.session_state["swing"] = dict(P=P, F=F, note=note)
+        st.write("Check whether the strategy has actually worked before you trust it.")
+        kind = st.radio("What to test", ["Swing strategy (recommended)", "Day-trading strategy"], horizontal=True, key="t_kind")
+        real = st.radio("Data", ["Real market data", "Practice data (fake, only checks the code)"], key="t_src").startswith("Real")
+        if kind.startswith("Swing"):
+            c1, c2 = st.columns(2)
+            yrs = c1.slider("Years of history", 1, 5, 3)
+            nsym = c2.slider("Stocks to test", 100, 1000, 300, 50)
+            if st.button("▶ Run full test", type="primary", key="t_run_swing"):
+                if real and not cl:
+                    st.error("Connect your keys first.")
                 else:
-                    data = (synthetic(syms) if src.startswith("Synthetic") else
-                            load_alpaca(syms, str(start), str(end), key, secret) if src == "Alpaca history" else load_csv(up))
-                    st.session_state["prep"] = prep_data(data)
-                    st.session_state["day_note"] = src
-                bar.empty()
-            except Exception as e:
-                st.error(f"Could not load data: {e}")
-        if eng.startswith("Swing") and st.session_state.get("swing"):
-            sw = st.session_state["swing"]
-            st.caption(sw["note"])
-            if st.button("Run swing backtest"):
-                with st.spinner("Simulating..."):
-                    tr, cv, expo = run_swing(sw["P"], sw["F"], sp, eq0, slip, comm)
-                    spy = sw["P"]["C"]["SPY"] if "SPY" in sw["P"]["C"] else None
-                    s, bm = stats(tr, cv, eq0), bench_stats(spy, cv)
-                    mc = monte_carlo(tr)
-                    stress = stress_table(lambda sl: run_swing(sw["P"], sw["F"], sp, eq0, sl, comm)[:2], max(slip, 0.0005), eq0)
-                m = st.columns(4)
-                m[0].metric("Return", f"{s['ret']:+.1%}", f"SPY {bm['ret']:+.1%}" if bm else None)
-                m[1].metric("Max drawdown", f"{s['max_dd']:.1%}", f"SPY {bm['dd']:.1%}" if bm else None, delta_color="off")
-                m[2].metric("Profit factor", "-" if not s["trades"] else f"{s['profit_factor']:.2f}")
-                m[3].metric("Trades", s["trades"])
-                m = st.columns(4)
-                m[0].metric("CAGR", f"{s['cagr']:+.1%}")
-                m[1].metric("Win rate", "-" if not s["trades"] else f"{s['win_rate']:.0%}")
-                m[2].metric("Avg R", "-" if not s["trades"] else f"{s['avg_R']:.2f}")
-                m[3].metric("Time invested", f"{expo:.0%}")
-                if s["trades"]:
-                    chart = pd.DataFrame({"Strategy": cv / eq0})
-                    if bm is not None:
-                        chart["SPY buy & hold"] = bm["curve"]
-                    st.line_chart(chart)
-                    st.area_chart((cv / cv.cummax() - 1).rename("Drawdown"))
-                    st.write("**Returns by year**")
-                    st.dataframe(yearly_returns(cv, eq0).map(lambda x: f"{x:+.1%}").rename("return").to_frame())
-                    st.write("**By setup**")
-                    st.dataframe(tr.groupby("kind").agg(trades=("pnl", "count"), win_rate=("pnl", lambda x: (x > 0).mean()),
-                                                         avg_R=("R", "mean"), total_pnl=("pnl", "sum")).round(2))
-                    st.write("**Slippage stress test** (does it survive worse fills?)")
-                    st.dataframe(stress, hide_index=True)
-                    if mc:
-                        st.write("**Monte Carlo** (range of outcomes from luck alone, same trades reshuffled)")
-                        st.write(f"Typical return {mc['ret_p50']:+.0%} (bad luck {mc['ret_p5']:+.0%}, good luck {mc['ret_p95']:+.0%}). "
-                                 f"Typical worst drawdown {mc['dd_p50']:.0%}, unlucky {mc['dd_p95']:.0%}. "
-                                 f"Chance of losing money: {mc['prob_loss']:.0%}.")
-                    if s["trades"] < 200:
-                        st.warning("Under ~200 trades: treat as anecdotal.")
-                    st.dataframe(tr)
-                    st.download_button("Download trades CSV", tr.to_csv(index=False), "swing_trades.csv")
+                    bar = st.progress(0.0, text="Loading data...")
+                    try:
+                        today = datetime.now().date()
+                        P, F, note = load_swing_data("alpaca" if real else "synthetic", today - timedelta(days=365 * yrs), today,
+                                                     nsym, key or None, secret or None,
+                                                     lambda f: bar.progress(min(float(f), 1.0), text="Downloading history..."))
+                        bar.progress(1.0, text="Simulating...")
+                        tr, cv, expo = run_swing(P, F, sp, eq0, slip, comm)
+                        spy = P["C"]["SPY"] if "SPY" in P["C"] else None
+                        s, bm = stats(tr, cv, eq0), bench_stats(spy, cv)
+                        stress = stress_table(lambda sl: run_swing(P, F, sp, eq0, sl, comm)[:2], max(slip, 0.0005), eq0)
+                        mc = monte_carlo(tr)
+                        rows, s_all, cv_all, tr_all, verdict = walk_forward_swing(P, F, sp, eq0, slip, comm)
+                        bar.empty()
+                        pf2 = stress["profit_factor"].iloc[1] if len(stress) > 1 else float("nan")
+                        passed = verdict.startswith("Some") and pf2 == pf2 and pf2 > 1.0
+                        (st.success if passed else st.error)(
+                            ("PROMISING: held up on unseen data and with worse fills. Still paper trade for weeks. " if passed else
+                             "NOT PROVEN: it did not hold up on unseen data or with worse fills. Don't use real money. ") + verdict)
+                        st.caption(note)
+                        m = st.columns(4)
+                        m[0].metric("Return", f"{s['ret']:+.1%}", f"SPY {bm['ret']:+.1%}" if bm else None)
+                        m[1].metric("Worst drop", f"{s['max_dd']:.1%}", f"SPY {bm['dd']:.1%}" if bm else None, delta_color="off")
+                        m[2].metric("Profit factor", "-" if not s["trades"] else f"{s['profit_factor']:.2f}")
+                        m[3].metric("Trades", s["trades"])
+                        if s["trades"]:
+                            chart = pd.DataFrame({"Strategy": cv / eq0})
+                            if bm is not None:
+                                chart["SPY buy & hold"] = bm["curve"]
+                            st.line_chart(chart)
+                            st.write("**Walk-forward** (tuned on the past, graded on unseen future)")
+                            st.dataframe(rows, hide_index=True)
+                            if s_all:
+                                st.write(f"Unseen-data result: return {s_all['ret']:+.1%}, profit factor {s_all['profit_factor']:.2f}, "
+                                         f"worst drop {s_all['max_dd']:.1%}, {s_all['trades']} trades.")
+                            st.write("**Worse fills test**")
+                            st.dataframe(stress, hide_index=True)
+                            if mc:
+                                st.write(f"**Luck range:** typical {mc['ret_p50']:+.0%}, bad luck {mc['ret_p5']:+.0%}, good luck {mc['ret_p95']:+.0%}. "
+                                         f"Chance of losing money: {mc['prob_loss']:.0%}.")
+                            with st.expander("All trades"):
+                                st.dataframe(tr)
+                                st.download_button("Download trades CSV", tr.to_csv(index=False), "swing_trades.csv")
+                    except Exception as e:
+                        bar.empty()
+                        st.error(f"Test failed: {e}")
+        else:
+            days = st.slider("Days of 1-minute history", 5, 40, 20)
+            if st.button("▶ Run day-trading test", type="primary", key="t_run_day"):
+                if real and not cl:
+                    st.error("Connect your keys first.")
                 else:
-                    st.write("No trades. Loosen the filters or load more data.")
-        if eng.startswith("Day") and st.session_state.get("prep"):
-            prep = st.session_state["prep"]
-            st.caption(f"{len(prep)} trading days loaded ({st.session_state.get('day_note')})")
-            if st.button("Run day-trading backtest"):
-                tr, cv = run(prep, p, eq0, slip, comm)
-                s = stats(tr, cv, eq0)
-                m = st.columns(5)
-                m[0].metric("Trades", s["trades"])
-                m[1].metric("Win rate", "-" if not s["trades"] else f"{s['win_rate']:.0%}")
-                m[2].metric("Profit factor", "-" if not s["trades"] else f"{s['profit_factor']:.2f}")
-                m[3].metric("Return", f"{s['ret']:+.1%}")
-                m[4].metric("Max drawdown", f"{s['max_dd']:.1%}")
-                if s["trades"]:
-                    st.line_chart(cv)
-                    st.write("**Slippage stress test**")
-                    st.dataframe(stress_table(lambda sl: run(prep, p, eq0, sl, comm), max(slip, 0.0005), eq0), hide_index=True)
-                    mc = monte_carlo(tr)
-                    if mc:
-                        st.write(f"**Monte Carlo:** typical {mc['ret_p50']:+.0%}, bad luck {mc['ret_p5']:+.0%}, "
-                                 f"chance of losing money {mc['prob_loss']:.0%}.")
-                    st.dataframe(tr)
-                    st.download_button("Download trades CSV", tr.to_csv(index=False), "trades.csv")
+                    try:
+                        with st.spinner("Loading and simulating..."):
+                            today = datetime.now().date()
+                            data = load_alpaca(p.watchlist, str(today - timedelta(days=days)), str(today), key, secret) if real else synthetic(p.watchlist)
+                            prep = prep_data(data)
+                            tr, cv = run(prep, p, eq0, slip, comm)
+                            s = stats(tr, cv, eq0)
+                            stress = stress_table(lambda sl: run(prep, p, eq0, sl, comm), max(slip, 0.0005), eq0)
+                            res, verdict = sweep(prep, p, eq0, slip, comm)
+                        m = st.columns(4)
+                        m[0].metric("Return", f"{s['ret']:+.1%}")
+                        m[1].metric("Worst drop", f"{s['max_dd']:.1%}")
+                        m[2].metric("Profit factor", "-" if not s["trades"] else f"{s['profit_factor']:.2f}")
+                        m[3].metric("Trades", s["trades"])
+                        if s["trades"]:
+                            st.line_chart(cv)
+                            st.write("**Worse fills test**")
+                            st.dataframe(stress, hide_index=True)
+                        if not res.empty:
+                            st.write("**Tune on early days, grade on later days**")
+                            st.dataframe(res, hide_index=True)
+                        (st.success if verdict.startswith("Some") else st.error)(verdict)
+                        st.caption("Day trading has the highest cost drag. Few retail day traders beat it.")
+                    except Exception as e:
+                        st.error(f"Test failed: {e}")
 
-    # ---------------- Optimizer ----------------
     with T[4]:
-        st.subheader("Swing: walk-forward test")
-        st.caption("Trains on the past, trades the next unseen stretch, repeats, then stitches the unseen results together.")
-        if st.session_state.get("swing"):
-            sw = st.session_state["swing"]
-            folds = st.slider("Folds", 2, 5, 3)
-            if st.button("Run walk-forward"):
-                with st.spinner("Testing 12 settings per fold..."):
-                    rows, s_all, cv_all, tr_all, verdict = walk_forward_swing(sw["P"], sw["F"], sp, eq0, slip, comm, folds)
-                st.dataframe(rows, hide_index=True)
-                if s_all:
-                    st.write(f"**Stitched out-of-sample:** return {s_all['ret']:+.1%}, profit factor {s_all['profit_factor']:.2f}, "
-                             f"max drawdown {s_all['max_dd']:.1%}, trades {s_all['trades']}")
-                    spy = sw["P"]["C"]["SPY"] if "SPY" in sw["P"]["C"] else None
-                    bm = bench_stats(spy, cv_all)
-                    if bm:
-                        st.write(f"SPY buy & hold over the same period: {bm['ret']:+.1%} (drawdown {bm['dd']:.1%})")
-                    st.line_chart(cv_all / eq0)
-                (st.success if verdict.startswith("Some") else st.error)(verdict)
-        else:
-            st.info("Load swing data in the Backtest tab first.")
-        st.subheader("Day trading: train/test sweep")
-        if st.session_state.get("prep"):
-            frac = st.slider("Share of days used for tuning", 0.5, 0.9, 0.7, 0.05)
-            if st.button("Run day sweep"):
-                with st.spinner("Testing 27 combinations..."):
-                    res, verdict = sweep(st.session_state["prep"], p, eq0, slip, comm, frac)
-                if not res.empty:
-                    st.dataframe(res, hide_index=True)
-                (st.success if verdict.startswith("Some") else st.error)(verdict)
-        else:
-            st.info("Load day-trading data in the Backtest tab first.")
-
-    with T[5]:
         st.markdown(GUIDE)
 
 
