@@ -690,18 +690,22 @@ def universe_info(tc, include_etf=False):
     cached = cache_get(name, 24)
     if cached is not None:
         return cached
-    from alpaca.trading.requests import GetAssetsRequest
-    from alpaca.trading.enums import AssetClass, AssetStatus
-    assets = tc.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY))
+    try:       # raw JSON: immune to new exchange names (e.g. TXSE) that the SDK's strict models reject
+        assets = tc.get("/assets", {"status": "active", "asset_class": "us_equity"})
+    except Exception:
+        from alpaca.trading.requests import GetAssetsRequest
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        assets = tc.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY))
+    f = lambda a, k: a.get(k) if isinstance(a, dict) else getattr(a, k, None)
     skip = NON_STOCK_WORDS if include_etf else NON_STOCK_WORDS + ETF_WORDS
     rows = []
     for a in assets:
-        ex = str(getattr(a.exchange, "value", a.exchange))
-        nm = (a.name or "").lower()
-        if (a.tradable and ex in ("NYSE", "NASDAQ", "AMEX", "ARCA") and a.symbol.isalpha() and len(a.symbol) <= 5
+        ex = f(a, "exchange")
+        ex = str(getattr(ex, "value", ex))
+        sym, nm = f(a, "symbol") or "", (f(a, "name") or "").lower()
+        if (f(a, "tradable") and ex in ("NYSE", "NASDAQ", "AMEX", "ARCA") and sym.isalpha() and len(sym) <= 5
                 and not any(w in nm for w in skip)):
-            rows.append(dict(symbol=a.symbol, shortable=bool(getattr(a, "shortable", False)),
-                             etb=bool(getattr(a, "easy_to_borrow", False))))
+            rows.append(dict(symbol=sym, shortable=bool(f(a, "shortable")), etb=bool(f(a, "easy_to_borrow"))))
     df = pd.DataFrame(rows).drop_duplicates("symbol").sort_values("symbol").reset_index(drop=True)
     cache_set(name, df)
     return df
