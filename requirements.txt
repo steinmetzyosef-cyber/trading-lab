@@ -1,4 +1,0 @@
-alpaca-py
-pandas
-numpy
-streamlit
