@@ -2201,13 +2201,13 @@ def dashboard():
                     continue
                 stat, _ = pick_status(pk, lp)
                 verb = "BUY" if pk["side"] == "LONG" else "SELL SHORT"
-                actionable = stat in ("IN BUY ZONE", "IN SHORT ZONE")
+                actionable = ("IN BUY ZONE" in stat) or ("IN SHORT ZONE" in stat)
                 def submit_paper_pick(pick, live_price):
                     """Last-second paper-only guardrails shared by manual and automatic modes."""
                     if tc is None:
                         raise RuntimeError("Connect Alpaca paper keys first.")
                     current_status, _ = pick_status(pick, live_price)
-                    if current_status not in ("IN BUY ZONE", "IN SHORT ZONE"):
+                    if not (("IN BUY ZONE" in current_status) or ("IN SHORT ZONE" in current_status)):
                         raise RuntimeError(f"Entry no longer valid ({current_status}); no order sent.")
                     qty = int(pick["qty"])
                     if qty < 1:
@@ -2253,12 +2253,22 @@ def dashboard():
                     return f"Paper order submitted: {verb} {qty} {pick['symbol']} (reference {fmt(live_price)})."
 
                 if execution_mode == "Manual approval":
+                    btn_disabled = int(pk["qty"]) < 1 or not actionable or tc is None
                     if st.button(f"Paper {verb} {int(pk['qty'])} {pk['symbol']}", key=f"ord_{mode_key}_{pk['symbol']}_{i}",
-                                 disabled=(int(pk["qty"]) < 1 or not actionable or tc is None)):
+                                 disabled=btn_disabled):
                         try:
                             ss["msg"] = submit_paper_pick(pk, lp)
                         except Exception as e:
                             st.error(f"Order not sent: {e}")
+                    if btn_disabled:
+                        reasons = []
+                        if tc is None:
+                            reasons.append("connect Alpaca paper keys")
+                        if int(pk["qty"]) < 1:
+                            reasons.append("qty is 0")
+                        if not actionable:
+                            reasons.append(f"status is '{stat}' (need IN BUY/SHORT ZONE)")
+                        st.caption("Button disabled: " + " · ".join(reasons))
                 elif auto_armed and mkt_open and actionable and tc is not None:
                     auto_key = f"{datetime.now(NY).date().isoformat()}:{mode_key}:{pk['symbol']}"
                     if auto_key not in ss.setdefault("paper_submitted_today", set()):
