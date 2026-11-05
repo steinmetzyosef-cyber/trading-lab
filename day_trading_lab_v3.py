@@ -1371,80 +1371,418 @@ Needs the market (SPY) above its 200-day average. Earnings within 5 days are ski
 """
 
 CSS = """<style>
-/* ===== Trading Lab v4 – polished modern UI ===== */
-.block-container{max-width:1480px;padding:1.2rem clamp(0.9rem,2.8vw,2.2rem) 4.5rem}
-.stButton>button{width:100%;border-radius:12px;font-weight:700;padding:.58rem 1rem;transition:all .15s ease}
-.stButton>button[kind="primary"],.stButton>button[data-testid="stBaseButton-primary"]{
-  background:linear-gradient(135deg,#4f46e5 0%,#0ea5e9 100%);border:0;color:#fff;
-  box-shadow:0 4px 14px rgba(79,70,229,.32)}
-.stButton>button[kind="primary"]:hover{filter:brightness(1.08);box-shadow:0 6px 18px rgba(79,70,229,.4)}
-.stTabs [data-baseweb="tab-list"]{gap:8px;flex-wrap:wrap;margin-bottom:6px}
-.stTabs [data-baseweb="tab"]{border-radius:999px;padding:7px 16px;background:rgba(128,128,128,.11);
-  font-weight:700;height:auto;border:1px solid transparent}
-.stTabs [aria-selected="true"]{background:linear-gradient(135deg,#4f46e5,#0ea5e9);color:#fff;
-  border-color:transparent;box-shadow:0 2px 10px rgba(79,70,229,.25)}
-.stTabs [data-baseweb="tab-highlight"],.stTabs [data-baseweb="tab-border"]{display:none}
-[data-testid="stMetric"]{background:rgba(128,128,128,.07);border:1px solid rgba(128,128,128,.22);
-  border-radius:14px;padding:12px 14px}
-.tl-hero{display:flex;align-items:center;border-radius:18px;padding:18px 20px;margin:0 0 14px 0;color:#fff;
-  background:linear-gradient(125deg,#4338ca 0%,#0e7490 55%,#059669 100%);
-  box-shadow:0 12px 32px rgba(67,56,202,.28)}
-.tl-logo{font-size:1.9rem;margin-right:16px;background:rgba(255,255,255,.18);border-radius:14px;
-  width:52px;height:52px;line-height:52px;text-align:center;backdrop-filter:blur(4px)}
-.tl-h1{font-size:1.5rem;font-weight:800;letter-spacing:-.02em}
-.tl-sub{font-size:.8rem;opacity:.9;margin-top:2px}
-.tl-bar{margin:8px 0 10px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.tl-chip{display:inline-flex;align-items:center;font-size:.74rem;font-weight:700;padding:4px 11px;
-  border-radius:999px;color:#fff;white-space:nowrap}
-.c-green{background:#16a34a}.c-amber{background:#d97706}.c-red{background:#dc2626}
-.c-gray{background:#64748b}.c-blue{background:#2563eb}.c-purple{background:#7c3aed}
-.tl-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-right:6px;
-  animation:tlp 1.2s infinite}
-@keyframes tlp{0%,100%{opacity:1}50%{opacity:.3}}
-.tl-pill{display:inline-block;margin:0 5px 5px 0;padding:5px 12px;border-radius:10px;
-  background:rgba(128,128,128,.1);border:1px solid rgba(128,128,128,.24);font-size:.78rem;font-weight:700}
-.hot-up{background:rgba(22,163,74,.13);border-color:rgba(22,163,74,.5)}
-.hot-dn{background:rgba(220,38,38,.13);border-color:rgba(220,38,38,.5)}
-.tl-card{border:1px solid rgba(128,128,128,.22);border-left:6px solid #4f46e5;border-radius:16px;
-  padding:15px 17px;margin:12px 0 8px 0;background:rgba(128,128,128,.045);
-  box-shadow:0 4px 16px rgba(0,0,0,.08);transition:box-shadow .15s ease}
-.tl-card:hover{box-shadow:0 6px 22px rgba(0,0,0,.12)}
-.tl-top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
-.tl-sym{font-size:1.7rem;font-weight:800;letter-spacing:.3px;margin-right:8px}
-.tl-rank{font-size:.76rem;font-weight:700;opacity:.78;text-align:right}
-.tl-meter{height:5px;border-radius:99px;background:rgba(128,128,128,.25);overflow:hidden;margin-top:5px;width:108px}
-.tl-meter div{height:100%;background:linear-gradient(90deg,#f59e0b,#10b981);border-radius:99px}
-.tl-live{margin:7px 0 3px 0;font-size:1.02rem;font-weight:700}
-.tl-live small{font-weight:500;opacity:.68}
-.tl-spark{width:100%;height:auto;display:block;margin:5px 0 2px}
-.tl-grid{table-layout:fixed;border-collapse:separate;border-spacing:7px 0;margin:9px -7px;width:calc(100% + 14px)}
-.tl-grid td{padding:0;border:0}
-.tl-box{border-radius:12px;padding:10px 5px;text-align:center}
-.tl-box small{display:block;font-size:.6rem;font-weight:800;letter-spacing:.06em;opacity:.82;margin-bottom:2px}
-.tl-box b{font-size:1.22rem;font-weight:800}
-.b-entry{background:rgba(37,99,235,.13);border:1px solid rgba(37,99,235,.48)}
-.b-target{background:rgba(16,185,129,.13);border:1px solid rgba(16,185,129,.48)}
-.b-stop{background:rgba(220,38,38,.13);border:1px solid rgba(220,38,38,.48)}
-.tl-meta{font-size:.82rem;opacity:.9;margin-top:6px}
-.tl-meta span{display:inline-block;margin:2px 12px 2px 0}
-.tl-why{font-size:.78rem;opacity:.7;margin-top:7px;line-height:1.35}
-.tl-banner{border-radius:12px;padding:11px 15px;font-weight:700;margin:6px 0 11px 0}
-.k-green{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.45)}
-.k-amber{background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.45)}
-.k-red{background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.45)}
-/* subtle dark-mode improvements */
-@media (prefers-color-scheme: dark){
-  .tl-card{background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.1)}
-  .tl-pill{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12)}
-  [data-testid="stMetric"]{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1)}
+/* ===== Trading Lab – Professional Terminal Theme ===== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap');
+
+html, body, [class*="css"]  {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
+
+.block-container {
+  max-width: 1520px;
+  padding: 0.8rem 1.2rem 3.5rem;
+  background: transparent;
+}
+
+/* Force a dark terminal-like feel even in light mode */
+.stApp {
+  background: linear-gradient(180deg, #0b0f19 0%, #0f172a 40%, #0b1220 100%);
+  color: #e2e8f0;
+}
+
+h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown, .stText {
+  color: #e2e8f0 !important;
+}
+
+/* Buttons */
+.stButton > button {
+  width: 100%;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.55rem 1rem;
+  transition: all 0.15s ease;
+  border: 1px solid rgba(148,163,184,0.15);
+  background: #1e293b;
+  color: #f1f5f9;
+}
+.stButton > button:hover {
+  border-color: #38bdf8;
+  background: #1e293b;
+  box-shadow: 0 0 0 1px #38bdf8;
+}
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="stBaseButton-primary"] {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+  border: none;
+  color: white;
+  box-shadow: 0 4px 14px rgba(14,165,233,0.35);
+}
+.stButton > button[kind="primary"]:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 6px 20px rgba(14,165,233,0.45);
+}
+
+/* Tabs – trading terminal style */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 4px;
+  background: #0f172a;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(148,163,184,0.12);
+  margin-bottom: 12px;
+}
+.stTabs [data-baseweb="tab"] {
+  border-radius: 7px;
+  padding: 8px 16px;
+  background: transparent;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #94a3b8 !important;
+  height: auto;
+  border: none;
+}
+.stTabs [aria-selected="true"] {
+  background: #1e293b !important;
+  color: #38bdf8 !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] {
+  display: none;
+}
+
+/* Metrics */
+[data-testid="stMetric"] {
+  background: #1e293b;
+  border: 1px solid rgba(148,163,184,0.12);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+[data-testid="stMetricLabel"] {
+  color: #94a3b8 !important;
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+[data-testid="stMetricValue"] {
+  color: #f8fafc !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-weight: 700 !important;
+}
+
+/* Inputs */
+.stTextInput input, .stNumberInput input, .stSelectbox, .stSlider {
+  background: #1e293b !important;
+  border-color: rgba(148,163,184,0.2) !important;
+  color: #f1f5f9 !important;
+  border-radius: 8px !important;
+}
+
+/* ========== HERO / HEADER ========== */
+.tl-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 12px;
+  padding: 14px 20px;
+  margin: 0 0 16px 0;
+  color: #f8fafc;
+  background: linear-gradient(90deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+  border: 1px solid rgba(56,189,248,0.18);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+.tl-logo {
+  font-size: 1.6rem;
+  margin-right: 14px;
+  background: linear-gradient(135deg, #0ea5e9, #06b6d4);
+  border-radius: 10px;
+  width: 44px;
+  height: 44px;
+  line-height: 44px;
+  text-align: center;
+  box-shadow: 0 0 20px rgba(14,165,233,0.4);
+}
+.tl-h1 {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #f8fafc;
+}
+.tl-sub {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-top: 1px;
+  font-weight: 500;
+}
+
+/* Status bar */
+.tl-bar {
+  margin: 0 0 14px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  background: #0f172a;
+  border: 1px solid rgba(148,163,184,0.1);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+/* Chips / badges */
+.tl-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 6px;
+  color: #fff;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.c-green { background: #059669; }
+.c-amber { background: #d97706; }
+.c-red   { background: #dc2626; }
+.c-gray  { background: #475569; }
+.c-blue  { background: #0284c7; }
+.c-purple{ background: #7c3aed; }
+
+.tl-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  margin-right: 5px;
+  animation: tlp 1.4s infinite;
+}
+@keyframes tlp {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(74,222,128,0.5); }
+  50%      { opacity: 0.6; box-shadow: 0 0 0 4px rgba(74,222,128,0); }
+}
+
+/* Pills */
+.tl-pill {
+  display: inline-block;
+  margin: 0 4px 4px 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #1e293b;
+  border: 1px solid rgba(148,163,184,0.15);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+.hot-up {
+  background: rgba(5,150,105,0.15);
+  border-color: rgba(5,150,105,0.4);
+  color: #34d399;
+}
+.hot-dn {
+  background: rgba(220,38,38,0.15);
+  border-color: rgba(220,38,38,0.4);
+  color: #f87171;
+}
+
+/* ========== TRADE CARDS ========== */
+.tl-card {
+  border: 1px solid rgba(148,163,184,0.12);
+  border-left: 4px solid #0ea5e9;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 10px 0 8px 0;
+  background: #1e293b;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.tl-card:hover {
+  border-color: rgba(56,189,248,0.35);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+}
+.tl-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tl-sym {
+  font-size: 1.55rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  margin-right: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #f8fafc;
+}
+.tl-rank {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-align: right;
+}
+.tl-meter {
+  height: 4px;
+  border-radius: 99px;
+  background: #334155;
+  overflow: hidden;
+  margin-top: 4px;
+  width: 100px;
+}
+.tl-meter div {
+  height: 100%;
+  background: linear-gradient(90deg, #0ea5e9, #22d3ee);
+  border-radius: 99px;
+}
+.tl-live {
+  margin: 8px 0 4px 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.tl-live small {
+  font-weight: 500;
+  color: #94a3b8;
+}
+.tl-spark {
+  width: 100%;
+  height: auto;
+  display: block;
+  margin: 6px 0 2px;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+/* Price grid */
+.tl-grid {
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 6px 0;
+  margin: 10px -6px;
+  width: calc(100% + 12px);
+}
+.tl-grid td { padding: 0; border: 0; }
+.tl-box {
+  border-radius: 8px;
+  padding: 10px 6px;
+  text-align: center;
+  background: #0f172a;
+}
+.tl-box small {
+  display: block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+}
+.tl-box b {
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  color: #f8fafc;
+}
+.b-entry {
+  border: 1px solid rgba(14,165,233,0.45);
+  background: rgba(14,165,233,0.08);
+}
+.b-entry b { color: #38bdf8; }
+.b-target {
+  border: 1px solid rgba(16,185,129,0.45);
+  background: rgba(16,185,129,0.08);
+}
+.b-target b { color: #34d399; }
+.b-stop {
+  border: 1px solid rgba(239,68,68,0.45);
+  background: rgba(239,68,68,0.08);
+}
+.b-stop b { color: #f87171; }
+
+.tl-meta {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin-top: 8px;
+}
+.tl-meta span {
+  display: inline-block;
+  margin: 2px 12px 2px 0;
+}
+.tl-meta b {
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', monospace;
+}
+.tl-why {
+  font-size: 0.76rem;
+  color: #64748b;
+  margin-top: 8px;
+  line-height: 1.4;
+  border-top: 1px solid rgba(148,163,184,0.08);
+  padding-top: 8px;
+}
+
+/* Banners */
+.tl-banner {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 600;
+  margin: 6px 0 12px 0;
+  font-size: 0.9rem;
+}
+.k-green {
+  background: rgba(5,150,105,0.12);
+  border: 1px solid rgba(5,150,105,0.35);
+  color: #34d399;
+}
+.k-amber {
+  background: rgba(217,119,6,0.12);
+  border: 1px solid rgba(217,119,6,0.35);
+  color: #fbbf24;
+}
+.k-red {
+  background: rgba(220,38,38,0.12);
+  border: 1px solid rgba(220,38,38,0.35);
+  color: #f87171;
+}
+
+/* Sidebar / expanders */
+.streamlit-expanderHeader {
+  background: #1e293b !important;
+  border-radius: 8px !important;
+  color: #e2e8f0 !important;
+}
+div[data-testid="stExpander"] {
+  border: 1px solid rgba(148,163,184,0.12);
+  border-radius: 8px;
+  background: #1e293b;
+}
+
+/* Dataframes */
+.stDataFrame {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Hide Streamlit branding for cleaner look */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
 </style>"""
 
 
-HERO = ("<div class='tl-hero'><div class='tl-logo'>📈</div><div>"
-        "<div class='tl-h1'>Trading Lab <span style='font-size:.72rem;opacity:.75;font-weight:600'>v4</span></div>"
-        "<div class='tl-sub'>Whole-market scans · quality-focused setups · clear entries · targets · stops · paper only</div>"
-        "</div></div>")
+
+HERO = ("<div class='tl-hero'>"
+        "<div style='display:flex;align-items:center'>"
+        "<div class='tl-logo'>⚡</div>"
+        "<div>"
+        "<div class='tl-h1'>TRADING LAB <span style='font-size:.7rem;font-weight:600;color:#38bdf8;letter-spacing:.08em;margin-left:6px'>PRO</span></div>"
+        "<div class='tl-sub'>LIVE MARKET SCANNER  ·  PAPER EXECUTION  ·  RISK MANAGED</div>"
+        "</div></div>"
+        "<div style='text-align:right;font-size:.72rem;color:#64748b;font-weight:600;letter-spacing:.04em'>"
+        "PAPER ONLY<br><span style='color:#34d399;font-size:.68rem'>● SYSTEM READY</span>"
+        "</div>"
+        "</div>")
 
 PRESETS = {
     "Quality": dict(note="Higher bar for entries. Fewer trades, better average quality & win-rate focus.",
