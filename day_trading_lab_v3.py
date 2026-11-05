@@ -1772,17 +1772,22 @@ header {visibility: hidden;}
 
 
 
-HERO = ("<div class='tl-hero'>"
-        "<div style='display:flex;align-items:center'>"
-        "<div class='tl-logo'>⚡</div>"
+HERO = ("<div style=\"background:linear-gradient(90deg,#020617,#0c4a6e,#020617);border:2px solid #22d3ee;"
+        "border-radius:12px;padding:18px 22px;margin-bottom:18px;display:flex;justify-content:space-between;"
+        "align-items:center;box-shadow:0 0 40px rgba(34,211,238,0.25)\">"
+        "<div style=\"display:flex;align-items:center;gap:14px\">"
+        "<div style=\"background:#22d3ee;color:#020617;font-weight:900;font-size:1.1rem;"
+        "width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center\">TL</div>"
         "<div>"
-        "<div class='tl-h1'>TRADING LAB <span style='font-size:.7rem;font-weight:600;color:#38bdf8;letter-spacing:.08em;margin-left:6px'>PRO</span></div>"
-        "<div class='tl-sub'>LIVE MARKET SCANNER  ·  PAPER EXECUTION  ·  RISK MANAGED</div>"
+        "<div style=\"font-size:1.5rem;font-weight:800;color:#f0f9ff;letter-spacing:-0.03em\">"
+        "TRADING LAB <span style=\"color:#22d3ee;font-size:0.75rem;letter-spacing:0.12em;margin-left:6px\">v4 PRO</span></div>"
+        "<div style=\"font-size:0.78rem;color:#67e8f9;font-weight:600;margin-top:2px\">"
+        "PROFESSIONAL PAPER TRADING TERMINAL</div>"
         "</div></div>"
-        "<div style='text-align:right;font-size:.72rem;color:#64748b;font-weight:600;letter-spacing:.04em'>"
-        "PAPER ONLY<br><span style='color:#34d399;font-size:.68rem'>● SYSTEM READY</span>"
-        "</div>"
-        "</div>")
+        "<div style=\"text-align:right\">"
+        "<div style=\"font-size:0.7rem;color:#94a3b8;font-weight:700;letter-spacing:0.06em\">PAPER MODE</div>"
+        "<div style=\"font-size:0.85rem;color:#4ade80;font-weight:700;margin-top:2px\">● LIVE</div>"
+        "</div></div>")
 
 PRESETS = {
     "Quality": dict(note="Higher bar for entries. Fewer trades, better average quality & win-rate focus.",
@@ -2001,12 +2006,13 @@ def _fragment(st, run_every):
 
 def dashboard():
     import streamlit as st
-    st.set_page_config(page_title="Trading Lab", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
+    st.set_page_config(page_title="Trading Lab PRO", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
     st.markdown(CSS, unsafe_allow_html=True)
     ss = st.session_state
     for k, env in (("k_key", "ALPACA_KEY"), ("k_sec", "ALPACA_SECRET"), ("k_fh", "FINNHUB_KEY")):
         ss.setdefault(k, os.environ.get(env, ""))
     st.markdown(HERO, unsafe_allow_html=True)
+    st.caption("⚡ Trading Lab v4 PRO  •  Dark terminal theme  •  Quality-focused defaults")
     with st.expander("🔑 Connect your Alpaca paper account", expanded=not (ss["k_key"] and ss["k_sec"])):
         st.text_input("API key", type="password", key="k_key")
         st.text_input("API secret", type="password", key="k_sec")
